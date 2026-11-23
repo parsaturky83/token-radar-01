@@ -209,31 +209,35 @@
       return;
     }
     var r = found.row;
-    var h = '<section class="panel"><button class="back" type="button" data-back>← Back to the board</button>' +
-      '<div class="detail-head"><h2>' + esc(r.name) + '</h2><span class="pill">' + esc(r.category || 'Uncategorised') + '</span></div>' +
-      '<p class="lede">' + esc(r.chains.join(', ')) + ' · TVL ' + money(r.tvl_usd) + ' · listed ' + esc(r.listed_at || 'unknown') + '</p>';
+    var chainList = r.chains.slice(0, 4).join(', ') + (r.chains.length > 4 ? ' +' + (r.chains.length - 4) + ' more' : '');
+    var bigR = found.kind === 'board'
+      ? '<span class="big-r">' + money(r.implied_value_usd) + '<small>implied launch value · rank #' + r.rank + ' of ' + D.board_size + '</small></span>'
+      : found.kind === 'live'
+        ? '<span class="big-r">' + money(r.mcap_usd) + '<small>market cap — it already trades</small></span>'
+        : '';
+    var h = '<section class="panel detail"><button class="back" type="button" data-back>← Back to the board</button>' +
+      '<div class="detail-head"><h2>' + esc(r.name) + '</h2><span class="pill">' + esc(r.category || 'Uncategorised') + '</span>' + bigR + '</div>' +
+      '<p class="lede">' + esc(chainList) + ' · TVL ' + money(r.tvl_usd) + ' · listed ' + esc(r.listed_at || 'unknown') + '</p>';
     if (found.kind === 'excluded') {
       h += '<div class="note"><p><b>Set aside, not ranked.</b> ' + esc(r.reason) + '. It records no token, but its launch would be the token of something that already trades, so the board does not rank it as a launch of its own.</p></div>';
     } else if (found.kind === 'live') {
-      h += '<p><span class="big">' + money(r.mcap_usd) + '<small>market cap — it already trades</small></span></p>' +
-        '<table class="kv"><tr><td>Market cap / TVL multiple</td><td>' + num(r.multiple) + '×</td></tr>' +
+      h += '<table class="kv"><tr><td>Market cap / TVL multiple</td><td>' + num(r.multiple) + '×</td></tr>' +
         '<tr><td>TVL</td><td>' + moneyFull(r.tvl_usd) + '</td></tr>' +
         '<tr><td>7-day TVL change</td><td class="' + pctCls(r.change_7d) + '">' + pct(r.change_7d) + '</td></tr></table>' +
         '<p class="lede">This protocol already has a token that trades, so the board shows the market&rsquo;s own value for it and never an implied one. It is one of the live comparables the model learns its multiples from.</p>';
     } else {
       var base = r.tvl_usd * r.multiple;
-      h += '<p><span class="big">' + money(r.implied_value_usd) + '<small>implied launch value · rank #' + r.rank + ' of ' + D.board_size + '</small></span></p>' +
-        '<h3>How the value is built</h3><table class="kv">' +
-        '<tr><td>TVL × category multiple (' + num(r.multiple) + '×)</td><td>' + moneyFull(base) + '</td></tr>' +
-        '<tr><td>× growth (' + num(r.growth_multiplier) + '× · 7d ' + pct(r.change_7d) + ')</td><td>' + moneyFull(base * r.growth_multiplier) + '</td></tr>' +
-        '<tr><td>× maturity (' + num(r.maturity_multiplier) + '× · ' + ageFmt(r.age_days) + ', no token)</td><td>' + moneyFull(base * r.growth_multiplier * r.maturity_multiplier) + '</td></tr>' +
-        '<tr><td>× breadth (' + num(r.breadth_multiplier) + '× · ' + r.chains.length + ' chain' + (r.chains.length === 1 ? '' : 's') + ')</td><td>' + moneyFull(r.implied_value_usd) + '</td></tr></table>' +
-        '<p class="lede">' + esc(r.multiple_source) + '. Market median multiple ' + num(D.global_multiple) + '×.</p>' +
+      h += '<div class="build-label">How the value is built</div><div class="build">' +
+        '<div><span>TVL × ' + num(r.multiple) + '×</span><b>' + moneyFull(base) + '</b></div>' +
+        '<div><span>× growth ' + num(r.growth_multiplier) + '× · 7d ' + pct(r.change_7d) + '</span><b>' + moneyFull(base * r.growth_multiplier) + '</b></div>' +
+        '<div><span>× maturity ' + num(r.maturity_multiplier) + '× · ' + ageFmt(r.age_days) + '</span><b>' + moneyFull(base * r.growth_multiplier * r.maturity_multiplier) + '</b></div>' +
+        '<div><span>× breadth ' + num(r.breadth_multiplier) + '× · ' + r.chains.length + ' chain' + (r.chains.length === 1 ? '' : 's') + '</span><b>' + moneyFull(r.implied_value_usd) + '</b></div></div>' +
+        '<p class="fine">' + esc(r.multiple_source) + '. Market median ' + num(D.global_multiple) + '×.' + (r.multiple_capped ? ' Multiple capped — see Method.' : '') + '</p>' +
         '<h3>Farm plan — six steps</h3><ol class="steps">' +
         r.farm_steps.map(function (s) {
           var m = s.match(/^(.*?) Cost: (.*?)\. Time: (.*?)\.?$/);
           var text = m ? m[1] : s, cost = m ? m[2] : '', time = m ? m[3] : '';
-          return '<li><div>' + esc(text) + '<div class="cost">Cost: ' + esc(cost) + ' · Time: ' + esc(time) + '</div></div></li>';
+          return '<li><div>' + esc(text) + ' <span class="cost">Cost: ' + esc(cost) + ' · Time: ' + esc(time) + '</span></div></li>';
         }).join('') + '</ol>';
       var comps = D.live.filter(function (l) { return l.category === r.category; }).slice(0, 5);
       if (comps.length) {
@@ -299,15 +303,20 @@
       '<p class="lede">Everything below is computed from the sealed snapshot at run time. No protocol name is ' +
       'special-cased; the same function scores every row.</p>' +
       '<div class="formula">implied = TVL × multiple × growth × maturity × breadth\n' +
-      'multiple  = category median mcap/TVL, shrunk toward the market median\n' +
-      '            weight n/(n+' + m.shrink_k + '), clamped to [' + m.mult_floor + '×, ' + m.mult_cap + '×] of market median\n' +
+      'multiple  = category median mcap/TVL, each live ratio capped at ' + m.ratio_cap + '× first,\n' +
+      '            shrunk toward the market median, weight n/(n+' + m.shrink_k + '),\n' +
+      '            clamped to [' + m.mult_floor + '×, ' + m.mult_cap + '×] of market median\n' +
       'growth    = 1 + clamp(7d change, ' + m.growth_floor + '%, +' + m.growth_cap + '%) × ' + m.growth_weight + '\n' +
       'maturity  = ' + m.maturity_floor + ' + ' + m.maturity_range + ' × min(age, ' + m.maturity_days + 'd) / ' + m.maturity_days + 'd\n' +
       'breadth   = 1 + ' + m.breadth_per_chain + ' × min(chains − 1, ' + m.breadth_max_chains + ')</div>' +
       '<h3>Category multiples (market median ' + num(D.global_multiple) + '×)</h3>' +
-      '<table><thead><tr><th>Category</th><th class="num">Live tokens</th><th class="num">Category median</th><th class="num">Weight</th><th class="num">Multiple used</th></tr></thead><tbody>' +
+      '<p class="lede">Each live token&rsquo;s mcap/TVL ratio is capped at ' + m.ratio_cap + '× before any median is taken: one ' +
+      'micro-cap token at 400× must not set its whole category. A category whose ratios were capped is flagged ' +
+      'in the Capped column, not hidden — in this snapshot ' + D.multiples.filter(function (x) { return x.capped_n > 0; }).length + ' of ' + D.multiples.length + ' categories had at least ' +
+      'one ratio capped, and none sits at the clamp.</p>' +
+      '<table><thead><tr><th>Category</th><th class="num">Live tokens</th><th class="num">Category median</th><th class="num">Weight</th><th class="num">Multiple used</th><th class="num">Capped</th></tr></thead><tbody>' +
       D.multiples.map(function (x) {
-        return '<tr><td>' + esc(x.category) + '</td><td class="num">' + x.live_n + '</td><td class="num">' + (x.category_median == null ? '—' : num(x.category_median) + '×') + '</td><td class="num">' + num(x.weight) + '</td><td class="num"><b>' + num(x.multiple) + '×</b></td></tr>';
+        return '<tr><td>' + esc(x.category) + '</td><td class="num">' + x.live_n + '</td><td class="num">' + (x.category_median == null ? '—' : num(x.category_median) + '×') + '</td><td class="num">' + num(x.weight) + '</td><td class="num"><b>' + num(x.multiple) + '×</b></td><td class="num">' + (x.capped_n > 0 ? x.capped_n + ' ratio' + (x.capped_n === 1 ? '' : 's') : '—') + '</td></tr>';
       }).join('') + '</tbody></table>' +
       '<h3>What the board ranks, and what it sets aside</h3>' +
       '<p class="lede">A row ranks when its record carries no token (no market cap, no CoinGecko id, no symbol) ' +
@@ -319,7 +328,8 @@
       '<p class="lede">The snapshot carries no revenue, no fees, no user counts and no points program, so the model uses ' +
       'only TVL, seven-day growth, age with no token, and chain breadth. A protocol&rsquo;s implied value is a claim ' +
       'about what its token would be worth if its record stayed as it is — not a prediction that it issues one, or ' +
-      'when, or at what price. Farm plans are generic by category: they name the action, the capital and the time, ' +
+      'when, or at what price. Farm plans are built per protocol from its own record — its name, category, chains, ' +
+      'TVL, seven-day move and age — so no two plans are the same; they name the action, the capital and the time, ' +
       'never a guaranteed airdrop.</p>' +
       '<p class="lede mono">Snapshot: ' + esc(D.source) + ' · as of ' + esc(D.as_of) + ' · floor ' + moneyFull(D.floor_usd) + '</p></section>';
     view.innerHTML = h;

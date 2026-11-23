@@ -66,8 +66,20 @@ td.rank{font-weight:800;color:var(--navy);width:44px}
 .pager button:disabled{opacity:.45;cursor:default}
 .pager span{color:var(--muted);font-size:13px}
 .back{font:inherit;background:none;border:0;color:var(--teal);cursor:pointer;padding:0;margin-bottom:10px;font-weight:650}
+.detail .back{margin-bottom:6px}
 .detail-head{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:baseline}
 .detail-head h2{font-size:24px;margin:0}
+.detail-head .big-r{margin-left:auto;text-align:right;font-size:24px;font-weight:800;color:var(--navy);letter-spacing:-.02em;font-variant-numeric:tabular-nums;line-height:1.1}
+.detail-head .big-r small{display:block;font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+.build-label{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:700;margin:12px 0 6px}
+.build{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.build>div{background:var(--row);border:1px solid var(--line2);border-radius:8px;padding:8px 10px}
+.build span{display:block;color:var(--muted);font-size:12px}
+.build b{font-size:14px;font-variant-numeric:tabular-nums}
+.fine{color:var(--muted);font-size:13px;margin:8px 0 0}
+.detail h3{margin:12px 0 6px}
+.detail .steps li{padding:5px 0}
+.detail .steps .cost{display:inline}
 .big{font-size:30px;font-weight:800;color:var(--navy);letter-spacing:-.02em;font-variant-numeric:tabular-nums}
 .big small{display:block;font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
 .kv{width:100%;max-width:640px}

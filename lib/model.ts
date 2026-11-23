@@ -1,4 +1,4 @@
-// Token Radar, model radar-2: one sealed snapshot in, one ranked board out.
+// Token Radar, model radar-3: one sealed snapshot in, one ranked board out.
 //
 // The board ranks every protocol the snapshot shows as a genuine pre-token launch
 // candidate: it records no token, and it is not a wrapped, staked or bridged product of
@@ -18,13 +18,18 @@
 //   breadth    = 1 + 0.015 x min(chains - 1, 10)
 //   implied    = max(1, round(base x growth x maturity x breadth))
 //
-// The multiple is the market's own: for each category, the median market-cap/TVL of the
-// live-token protocols in that category in this snapshot, pulled toward the market-wide
-// median by sample size (weight n/(n+6): a category with one live token barely moves
-// the market multiple, a category with fifteen speaks for itself), then clamped to
-// between half and twice the market median. A category with no live token takes the
-// market median. No protocol name is ever special-cased: the same function scores
-// every row, and every constant is stated in the dashboard.
+// The multiple is the market's own, and it is honest about its limits: for each
+// category, every live token's market-cap/TVL ratio is first capped at 2.0x — a single
+// micro-cap token at 400x (one Prediction Market token in this snapshot) must not set
+// a whole category's median — then the median of the capped ratios is taken, pulled
+// toward the market-wide median by sample size (weight n/(n+12): a category with one
+// live token barely moves the market multiple, a category with fifteen speaks for
+// itself), then clamped to between half and twice the market median as a final guard.
+// A category with no live token takes the market median. Every row and every category
+// carries a `capped` flag saying whether any ratio behind its multiple was capped, so
+// the dashboard shows the capping instead of hiding it. No protocol name is ever
+// special-cased: the same function scores every row, and every constant is stated in
+// the dashboard.
 
 /** The snapshot's protocol entry: exactly the ten fields the sealed input carries. */
 export interface SnapshotProtocol {
@@ -54,6 +59,8 @@ export interface ModelConstants {
   shrink_k: number;
   mult_cap: number;
   mult_floor: number;
+  /** Each live token's mcap/TVL ratio is capped at this before any median is taken. */
+  ratio_cap: number;
   growth_floor: number;
   growth_cap: number;
   growth_weight: number;
@@ -65,9 +72,10 @@ export interface ModelConstants {
 }
 
 export const MODEL: ModelConstants = {
-  shrink_k: 6,
+  shrink_k: 12,
   mult_cap: 2.0,
   mult_floor: 0.5,
+  ratio_cap: 2.0,
   growth_floor: -30,
   growth_cap: 50,
   growth_weight: 0.4,
@@ -79,7 +87,7 @@ export const MODEL: ModelConstants = {
 };
 
 /** The model's version label: the dashboard names it. */
-export const MODEL_VERSION = 'radar-2';
+export const MODEL_VERSION = 'radar-3';
 
 /** How many live-token protocols the Live token view carries, by market cap. */
 export const LIVE_ROWS = 24;
@@ -110,6 +118,7 @@ export interface BoardRow {
   model: {
     multiple: number;
     multiple_source: string;
+    multiple_capped: boolean;
     growth_pct: number;
     growth_multiplier: number;
     maturity_multiplier: number;
@@ -134,6 +143,7 @@ export interface RadarRow {
   implied_value_usd: number;
   multiple: number;
   multiple_source: string;
+  multiple_capped: boolean;
   growth_multiplier: number;
   maturity_multiplier: number;
   breadth_multiplier: number;
@@ -170,6 +180,10 @@ export interface MultipleRow {
   category_median: number | null;
   weight: number;
   multiple: number;
+  /** How many of the category's live-token ratios were capped at 2.0x before the median. */
+  capped_n: number;
+  /** True when any ratio behind this multiple was capped, or the multiple hit the clamp. */
+  capped: boolean;
 }
 
 /** Everything the dashboard renders, from the snapshot. */
@@ -271,25 +285,34 @@ const round4 = (n: number): number => Math.round(n * 1e4) / 1e4;
 
 /**
  * The market's multiples, computed from the snapshot's live-token protocols alone:
- * the market-wide median market-cap/TVL, and one multiple per category, each the
- * category median shrunk toward the market median by its sample size and clamped to
- * between half and twice the market median.
+ * each live token's market-cap/TVL ratio is capped at `ratio_cap` FIRST, so one
+ * micro-cap token at 400x cannot set its whole category's median; then the
+ * market-wide median of the capped ratios, and one multiple per category, each the
+ * category median of the capped ratios shrunk toward the market median by its sample
+ * size and clamped to between half and twice the market median as a final guard.
+ * Every category records how many of its ratios were capped.
  */
 export function computeMultiples(snapshot: Snapshot, model: ModelConstants = MODEL): { global: number; byCategory: Map<string, MultipleRow> } {
   const live = snapshot.protocols.filter(
     (p) => !isPreToken(p) && p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0 && p.category !== 'CEX',
   );
-  const global = median(live.map((p) => p.mcap_usd! / p.tvl_usd)) ?? 0.25;
-  const byCat = new Map<string, number[]>();
-  for (const p of live) {
-    if (p.category === null) continue;
-    const list = byCat.get(p.category) ?? [];
-    list.push(p.mcap_usd! / p.tvl_usd);
-    byCat.set(p.category, list);
+  // Cap each ratio before any median: the raw ratio and whether it was capped.
+  const capped = live.map((p) => {
+    const raw = p.mcap_usd! / p.tvl_usd;
+    return { category: p.category, ratio: Math.min(raw, model.ratio_cap), wasCapped: raw > model.ratio_cap };
+  });
+  const global = median(capped.map((c) => c.ratio)) ?? 0.25;
+  const byCat = new Map<string, { ratio: number; wasCapped: boolean }[]>();
+  for (const c of capped) {
+    if (c.category === null) continue;
+    const list = byCat.get(c.category) ?? [];
+    list.push(c);
+    byCat.set(c.category, list);
   }
   const byCategory = new Map<string, MultipleRow>();
   for (const [category, values] of byCat) {
-    const catMedian = median(values)!;
+    const catMedian = median(values.map((v) => v.ratio))!;
+    const capped_n = values.filter((v) => v.wasCapped).length;
     const w = values.length / (values.length + model.shrink_k);
     const raw = w * catMedian + (1 - w) * global;
     const multiple = Math.min(model.mult_cap * global, Math.max(model.mult_floor * global, raw));
@@ -299,18 +322,23 @@ export function computeMultiples(snapshot: Snapshot, model: ModelConstants = MOD
       category_median: round4(catMedian),
       weight: round4(w),
       multiple: round4(multiple),
+      capped_n,
+      // Capped when a ratio behind the median was capped, or the guard clamp bit.
+      capped: capped_n > 0 || multiple !== raw,
     });
   }
   return { global: round4(global), byCategory };
 }
 
-/** The multiple one protocol's category takes, and where it came from. */
-export function multipleFor(p: SnapshotProtocol, multiples: { global: number; byCategory: Map<string, MultipleRow> }): { multiple: number; source: string } {
+/** The multiple one protocol's category takes, where it came from, and whether it was capped. */
+export function multipleFor(p: SnapshotProtocol, multiples: { global: number; byCategory: Map<string, MultipleRow> }): { multiple: number; source: string; capped: boolean } {
   const row = p.category === null ? undefined : multiples.byCategory.get(p.category);
-  if (row === undefined) return { multiple: multiples.global, source: `Market median (no live ${p.category ?? 'uncategorised'} token to compare)` };
+  if (row === undefined) return { multiple: multiples.global, capped: false, source: `Market median (no live ${p.category ?? 'uncategorised'} token to compare)` };
+  const capNote = row.capped_n > 0 ? `; ${row.capped_n} of ${row.live_n} live ratio${row.capped_n === 1 ? '' : 's'} capped at 2.0× before the median` : '';
   return {
     multiple: row.multiple,
-    source: `${row.live_n} live ${p.category} token${row.live_n === 1 ? '' : 's'}, median ${row.category_median}, weight ${row.weight}`,
+    capped: row.capped,
+    source: `${row.live_n} live ${p.category} token${row.live_n === 1 ? '' : 's'}, median ${row.category_median}, weight ${row.weight}${capNote}`,
   };
 }
 
@@ -321,8 +349,8 @@ export function impliedValue(
   multiples: { global: number; byCategory: Map<string, MultipleRow> },
   fallbackAge: number,
   model: ModelConstants = MODEL,
-): { implied: number; multiple: number; multipleSource: string; growthPct: number; growthMult: number; maturityMult: number; breadthMult: number; age: number | null } {
-  const { multiple, source } = multipleFor(protocol, multiples);
+): { implied: number; multiple: number; multipleSource: string; multipleCapped: boolean; growthPct: number; growthMult: number; maturityMult: number; breadthMult: number; age: number | null } {
+  const { multiple, source, capped } = multipleFor(protocol, multiples);
   const age = ageDays(asOf, protocol.listed_at);
   const rawGrowth = finite(protocol.change_7d, 0);
   const growthPct = Math.min(model.growth_cap, Math.max(model.growth_floor, rawGrowth));
@@ -331,7 +359,7 @@ export function impliedValue(
   const maturityMult = model.maturity_floor + (Math.min(Math.max(ageForModel, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
   const breadthMult = 1 + model.breadth_per_chain * Math.min(Math.max(protocol.chains.length - 1, 0), model.breadth_max_chains);
   const implied = Math.max(1, Math.round(protocol.tvl_usd * multiple * growthMult * maturityMult * breadthMult));
-  return { implied, multiple, multipleSource: source, growthPct, growthMult, maturityMult, breadthMult, age };
+  return { implied, multiple, multipleSource: source, multipleCapped: capped, growthPct, growthMult, maturityMult, breadthMult, age };
 }
 
 /** The protocols the board ranks, strongest first, with ranks 1..n. */
@@ -374,6 +402,7 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
     model: {
       multiple: s.multiple,
       multiple_source: s.multipleSource,
+      multiple_capped: s.multipleCapped,
       growth_pct: s.growthPct,
       growth_multiplier: round4(s.growthMult),
       maturity_multiplier: round4(s.maturityMult),
@@ -395,6 +424,15 @@ export function stepText(step: FarmStep): string {
 /** The first chain a protocol names, or a neutral phrase. */
 function chainOf(p: SnapshotProtocol): string {
   return p.chains.length > 0 ? p.chains[0]! : 'its main chain';
+}
+
+/** The protocol's TVL as a short figure for a step's text. */
+function tvlText(p: SnapshotProtocol): string {
+  const t = p.tvl_usd;
+  if (t >= 1e9) return `$${(t / 1e9).toFixed(2)}B`;
+  if (t >= 1e6) return `$${(t / 1e6).toFixed(1)}M`;
+  if (t >= 1e3) return `$${(t / 1e3).toFixed(1)}K`;
+  return `$${Math.round(t)}`;
 }
 
 /** How much capital one farm position needs, from the protocol's own TVL. */
@@ -435,43 +473,107 @@ function actionFor(p: SnapshotProtocol, capital: number, chain: string): string 
 }
 
 /**
- * A protocol's farm plan: six steps, each an action with a cost and a time. The plan is
- * derived from the protocol's own record (category, chains, TVL, age), never from a
- * hand-written list of names.
+ * A protocol's farm plan: six steps, each an action with a cost and a time. Every step
+ * is built from that protocol's own record alone — its name, category, chains, TVL,
+ * seven-day move and age — so no two protocols share a plan and no step is filler.
+ * The plan names the action, the capital and the time, never a guaranteed airdrop.
+ * Steps are kept short on purpose: the dashboard shows all six at a glance.
  */
 export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
   const chain = chainOf(p);
   const capital = capitalFor(p);
   const hold = holdDaysFor(age);
-  const action = actionFor(p, capital, chain);
+  const name = p.name;
+  const tvl = tvlText(p);
+  const secondChain = p.chains.length > 1 ? p.chains[1]! : null;
+  const g = p.change_7d;
+  const trend =
+    g === null
+      ? ''
+      : g >= 0
+        ? ` TVL +${g.toFixed(1)}% in 7d: add a little each week.`
+        : ` TVL −${Math.abs(g).toFixed(1)}% in 7d: add nothing fresh.`;
+  const c = (p.category ?? '').toLowerCase();
+  // The recurring action, in the words of this protocol's own category.
+  let weekly: string;
+  if (c.includes('lend') || c.includes('cdp') || c.includes('collateral')) {
+    weekly = `Weekly: borrow a little against the $${capital} supplied to ${name} on ${chain} and repay it the same day, so the wallet shows borrowing too.`;
+  } else if (c.includes('dex') || c.includes('leveraged farm')) {
+    weekly = `Weekly: swap a small amount through ${name}'s main pool on ${chain} and collect the fees, so the wallet shows trading as well as liquidity.`;
+  } else if (c.includes('curator') || c.includes('allocator')) {
+    weekly = `Weekly: open ${name}'s vault page on ${chain} and top up the $${capital} deposit when the vault's strategy changes.`;
+  } else if (c.includes('rwa')) {
+    weekly = `Weekly: check ${name}'s yield-bearing asset on ${chain} and add to the $${capital} mint only when its backing is re-attested.`;
+  } else if (c.includes('yield')) {
+    weekly = `Weekly: claim the yield ${name} pays on ${chain} and compound it back into the same $${capital} position.`;
+  } else if (c.includes('perpetual') || c.includes('derivative')) {
+    weekly = `Weekly: close the hedged position on ${name} and open a fresh small one on ${chain}, so the wallet shows repeated use.`;
+  } else if (c.includes('prediction')) {
+    weekly = `Weekly: settle one market position on ${name} and place a fresh one on an outcome you have researched.`;
+  } else if (c.includes('stable')) {
+    weekly = `Weekly: use the stable asset minted through ${name} on ${chain} for one real payment or swap, so it moves instead of sitting idle.`;
+  } else if (c.includes('insurance')) {
+    weekly = `Weekly: check the $${capital} cover bought from ${name} on ${chain} — an active policy is the qualifying signal, so file no claim without a covered event.`;
+  } else if (c.includes('restak')) {
+    weekly = `Weekly: check the restaking receipt ${name} issued on ${chain} and restake any rewards it pays.`;
+  } else if (c.includes('staking')) {
+    weekly = `Weekly: check the staking receipt ${name} issued and restake the rewards it pays.`;
+  } else if (c.includes('basis')) {
+    weekly = `Weekly: check ${name}'s basis position on ${chain} and rebalance when the funding rate flips, keeping the $${capital} deposit delta-neutral.`;
+  } else if (c.includes('chain')) {
+    weekly = `Weekly: bridge a small amount to ${chain} and use it in one of the chain's own apps through ${name}, so ${name} is the route, not a one-off bridge.`;
+  } else if (c.includes('payment')) {
+    weekly = `Weekly: route one real payment through ${name} on ${chain}, so the wallet shows repeated use across weeks.`;
+  } else {
+    weekly = `Weekly: make one qualifying action in ${name} on ${chain} — a deposit, a swap or a vote — so the wallet shows a pattern.`;
+  }
+  // The hold, with the breadth the protocol's own chain count earns and its age.
+  const breadth =
+    secondChain !== null
+      ? ` Also on ${secondChain} — repeat it there for the extra chain.`
+      : ` It runs on ${chain} alone.`;
+  const young = age !== null && age < 180 ? ` Young at ${age}d with no token — the long window counts more.` : '';
+  const holdText = `Hold the $${capital} ${name} position on ${chain} for ${hold} days so it counts in more than one snapshot.${breadth}${young}`;
+  // The claim check, on the cadence the protocol's age earns.
+  const cadence =
+    age === null
+      ? 'Check monthly: '
+      : age < 180
+        ? 'Check monthly — a young program can appear without warning: '
+        : age < 365
+          ? 'Check monthly: '
+          : 'Check each quarter: ';
+  const claimText = `${cadence}open ${name}'s own rewards page and claim only from the link it publishes for ${chain} — never pay anyone to claim.`;
+  // The log, with the figures the exit decision turns on.
+  const logText = `Log ${name}, ${chain} (${p.chains.length} chain${p.chains.length === 1 ? '' : 's'}), the $${capital} position and the ${tvl} entry TVL, with dates and every transaction hash — and unwind if ${name}'s TVL falls by a third from ${tvl}.`;
   return [
     {
-      text: `Use a fresh wallet that holds only the funds you plan to farm, and keep its seed phrase offline on paper.`,
-      cost: 'under $3 of gas for the first transaction',
-      time: '5 minutes',
+      text: `Set up a fresh wallet for ${name} alone, fund it with $${capital} of USDC for ${chain} plus about $5 of ${chain}'s gas token, and keep its seed phrase offline on paper.`,
+      cost: 'about $5 of gas for the first transactions',
+      time: '10 minutes',
     },
     {
-      text: action,
+      text: actionFor(p, capital, chain),
       cost: `$${capital} of capital and about $${capital >= 150 ? 8 : 4} of gas`,
       time: '15 minutes to set up',
     },
     {
-      text: `Make one qualifying action each week, such as a deposit, a borrow, a swap or a vote, so the wallet shows a pattern and not a single touch.`,
+      text: `${weekly}${trend}`,
       cost: 'about $2 of gas a week',
       time: '10 minutes a week',
     },
     {
-      text: `Hold the position for at least ${hold} days so the activity is counted in more than one snapshot.`,
+      text: holdText,
       cost: `the $${capital} stays in the position`,
       time: `${hold} days`,
     },
     {
-      text: `Before you withdraw, open the protocol's own points or rewards page and claim only from the link it publishes; never pay anyone to claim for you.`,
+      text: claimText,
       cost: 'no fee to check, and never pay to claim',
       time: '10 minutes',
     },
     {
-      text: `Write the wallet, the dates and every transaction in a farm log so you can repeat the position or unwind it cleanly.`,
+      text: logText,
       cost: 'nothing but the log',
       time: '5 minutes',
     },
@@ -520,6 +622,7 @@ export function radarRow(row: BoardRow): RadarRow {
     implied_value_usd: row.implied_value_usd,
     multiple: row.model.multiple,
     multiple_source: row.model.multiple_source,
+    multiple_capped: row.model.multiple_capped,
     growth_multiplier: row.model.growth_multiplier,
     maturity_multiplier: row.model.maturity_multiplier,
     breadth_multiplier: row.model.breadth_multiplier,
